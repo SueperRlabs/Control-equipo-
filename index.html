@@ -124,6 +124,18 @@
   th:last-child,td:last-child{text-align:right;}
   td{padding:11px 0;border-top:1px solid var(--line2);}
   .sug{padding:11px 13px;border-radius:9px;background:var(--line2);margin-bottom:6px;font-size:13px;cursor:pointer;line-height:1.45;}
+
+  /* mapa */
+  .mapbox{position:relative;background:linear-gradient(180deg,#FCFCFB,#F5F5F4);
+    border:1px solid var(--line);border-radius:12px;padding:6px;margin-bottom:12px;}
+  .mapbox svg{width:100%;height:auto;display:block;}
+  .mp{cursor:pointer;}
+  .mp circle{transition:.15s;}
+  .maplg{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-bottom:10px;}
+  .maplg i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle;}
+  .mapdet{font-size:13px;padding:11px 13px;border-radius:9px;background:var(--line2);color:var(--ink);}
+  .mapdet b{font-weight:600;}
+  .mapdet .m2{display:block;color:var(--muted);font-size:12px;margin-top:3px;}
 </style>
 </head>
 <body>
@@ -459,6 +471,7 @@ function renderHoy(){
   '<div class="kpi warn"><div class="n">'+k.tard+'</div><div class="l">Tardanzas</div></div>'+
   '<div class="kpi bad"><div class="n">'+k.ausentes+'</div><div class="l">Ausentes</div></div>'+
   '<div class="kpi"><div class="n">'+k.cobertura+'%</div><div class="l">Cobertura</div></div></div>'+
+  mapaHTML(CFG,MARKS)+
   '<div class="card"><div class="card-h">Equipo<span>Cambia la fecha para ver el historial</span></div>'+
   '<input type="date" value="'+FECHA+'" onchange="cambiarFecha(this.value)">'+
   EQ.map(p=>{
@@ -605,6 +618,91 @@ async function copiarSemanaAnterior(){
     document.getElementById('hMsg').innerHTML='<div class="msg ok">Semana copiada.</div>';
   }catch(e){msg.innerHTML='<div class="msg err">Error: '+esc(String(e.message).slice(0,180))+'</div>';}
 }
+
+/* ══════════ MAPA DE COBERTURA ══════════ */
+function proyectar(lat,lon,cfg){
+  return {dx:(lon-cfg.lon)*111320*Math.cos(cfg.lat*Math.PI/180),
+          dy:(lat-cfg.lat)*110540};}
+function alcanceMapa(cfg,marks){
+  let max=cfg.radio*1.45;
+  marks.forEach(m=>{if(m.lat!=null&&m.lon!=null){
+    const p=proyectar(m.lat,m.lon,cfg);
+    max=Math.max(max,Math.sqrt(p.dx*p.dx+p.dy*p.dy)*1.25);}});
+  return Math.ceil(max/10)*10;}
+function escalaBonita(max){
+  const objetivo=max/2;
+  const opciones=[10,25,50,100,200,250,500,1000,2000,5000];
+  return opciones.reduce((a,b)=>Math.abs(b-objetivo)<Math.abs(a-objetivo)?b:a);}
+function colorEstado(e){return e==='presente'?'#059669':e==='tarde'?'#B45309':'#BE123C';}
+
+function mapaHTML(cfg,marks){
+  const conGPS=marks.filter(m=>m.lat!=null&&m.lon!=null);
+  if(!conGPS.length)
+    return '<div class="card"><div class="card-h">Mapa de cobertura</div>'+
+      '<div class="empty">Todavía no hay marcajes con ubicación para mostrar.</div></div>';
+
+  const S=340, C=S/2, RPX=138;
+  const max=alcanceMapa(cfg,conGPS), k=RPX/max;
+  const rRadio=cfg.radio*k;
+  const esc2=escalaBonita(max), rEsc=esc2*k;
+
+  let g='<svg viewBox="0 0 '+S+' '+S+'" role="img">';
+  g+='<defs><radialGradient id="gz"><stop offset="0%" stop-color="#0F766E" stop-opacity=".10"/>'+
+     '<stop offset="100%" stop-color="#0F766E" stop-opacity=".02"/></radialGradient></defs>';
+  // anillo de escala de referencia
+  if(rEsc<RPX+2){
+    g+='<circle cx="'+C+'" cy="'+C+'" r="'+rEsc.toFixed(1)+'" fill="none" stroke="#D6D3D1" stroke-width="1" stroke-dasharray="2 5"/>';
+    g+='<text x="'+C+'" y="'+(C-rEsc-5).toFixed(1)+'" text-anchor="middle" font-size="9" fill="#A8A29E">'+esc2+' m</text>';
+  }
+  // zona permitida
+  g+='<circle cx="'+C+'" cy="'+C+'" r="'+rRadio.toFixed(1)+'" fill="url(#gz)" stroke="#0F766E" stroke-width="1.5" stroke-dasharray="6 4"/>';
+  g+='<text x="'+C+'" y="'+(C-rRadio-6).toFixed(1)+'" text-anchor="middle" font-size="9.5" font-weight="600" fill="#0F766E">zona permitida · '+cfg.radio+' m</text>';
+  // cruz de referencia
+  g+='<line x1="'+(C-RPX)+'" y1="'+C+'" x2="'+(C+RPX)+'" y2="'+C+'" stroke="#E7E5E4" stroke-width="1"/>';
+  g+='<line x1="'+C+'" y1="'+(C-RPX)+'" x2="'+C+'" y2="'+(C+RPX)+'" stroke="#E7E5E4" stroke-width="1"/>';
+  g+='<text x="'+C+'" y="16" text-anchor="middle" font-size="9" fill="#D6D3D1">N</text>';
+  // tienda
+  g+='<circle cx="'+C+'" cy="'+C+'" r="9" fill="#1C1917"/>';
+  g+='<circle cx="'+C+'" cy="'+C+'" r="3.2" fill="#FAFAF9"/>';
+  g+='<text x="'+C+'" y="'+(C+23)+'" text-anchor="middle" font-size="9.5" font-weight="600" fill="#57534E">Tienda</text>';
+  // personas
+  conGPS.forEach((m,i)=>{
+    const p=proyectar(m.lat,m.lon,cfg);
+    let x=C+p.dx*k, y=C-p.dy*k;
+    const d=Math.sqrt((x-C)**2+(y-C)**2), lim=RPX+4;
+    if(d>lim){x=C+(x-C)*lim/d;y=C+(y-C)*lim/d;}      // fijar al borde si se sale
+    const col=colorEstado(m.estado), nom=nombreDe(m.empleado_id).split(' ')[0];
+    g+='<g class="mp" onclick="verPunto('+i+')">';
+    if(m.estado!=='presente')
+      g+='<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="13" fill="'+col+'" opacity=".13"/>';
+    g+='<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="6.5" fill="'+col+'" stroke="#fff" stroke-width="2"/>';
+    g+='<text x="'+x.toFixed(1)+'" y="'+(y+18).toFixed(1)+'" text-anchor="middle" font-size="9" font-weight="600" fill="#57534E">'+esc(nom)+'</text>';
+    g+='</g>';
+  });
+  g+='</svg>';
+
+  const fuera=conGPS.filter(m=>m.estado==='fuera').length;
+  return '<div class="card"><div class="card-h">Mapa de cobertura<span>'+
+    (fuera?fuera+' persona(s) marcaron fuera del área permitida':'Todos marcaron dentro del área')+
+    '</span></div><div class="mapbox">'+g+'</div>'+
+    '<div class="maplg"><span><i style="background:#059669"></i>En zona</span>'+
+    '<span><i style="background:#B45309"></i>Tardanza</span>'+
+    '<span><i style="background:#BE123C"></i>Fuera de zona</span></div>'+
+    '<div class="mapdet" id="mapDet">Toca un punto para ver el detalle del marcaje.</div></div>';
+}
+function verPunto(i){
+  const conGPS=MARKS.filter(m=>m.lat!=null&&m.lon!=null), m=conGPS[i];
+  if(!m)return;
+  const est=m.estado==='presente'?'Dentro de zona y a tiempo'
+    :m.estado==='tarde'?'Llegó tarde':'Marcó fuera del área permitida';
+  const extra=m.distancia>cfg_radio()?' — a '+(m.distancia-cfg_radio())+' m más allá del límite':'';
+  document.getElementById('mapDet').innerHTML=
+    '<b>'+esc(nombreDe(m.empleado_id))+'</b> · '+hhmm(m.hora)+
+    '<span class="m2">'+est+extra+'<br>Distancia a la tienda: '+m.distancia+' m'+
+    (m.precision_gps?' · precisión GPS ±'+m.precision_gps+' m':'')+
+    ((m.razones&&m.razones.length)?'<br>Alerta: '+esc(m.razones.join('; ')):'')+'</span>';
+}
+function cfg_radio(){return CFG?CFG.radio:0;}
 
 /* ══════════ AJUSTES ══════════ */
 function setupHTML(edit){
