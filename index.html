@@ -41,9 +41,10 @@
     font-weight:400;color:var(--muted);margin-top:5px;}
 
   label{display:block;font-size:12px;font-weight:500;color:var(--muted);margin-bottom:6px;}
-  input,select{width:100%;padding:11px 13px;border-radius:9px;border:1px solid var(--line);
+  input,select,textarea{width:100%;padding:11px 13px;border-radius:9px;border:1px solid var(--line);
     background:var(--surface);color:var(--ink);font-size:15px;font-family:inherit;margin-bottom:14px;}
-  input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+  textarea{resize:vertical;min-height:64px;line-height:1.5;}
   input[type=date],input[type=time]{-webkit-appearance:none;}
 
   button{font-family:inherit;cursor:pointer;border:none;}
@@ -76,6 +77,28 @@
   .tag.warn{background:var(--warn-bg);color:var(--warn);}
   .tag.bad{background:var(--bad-bg);color:var(--bad);}
   .tag.none{background:var(--line2);color:var(--faint);}
+
+  /* solicitudes de cambio */
+  .est{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;
+    padding:4px 9px;border-radius:6px;white-space:nowrap;}
+  .est i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;}
+  .est.pendiente{background:var(--warn-bg);color:var(--warn);}
+  .est.aprobado{background:var(--ok-bg);color:var(--ok);}
+  .est.rechazado{background:var(--bad-bg);color:var(--bad);}
+  .req{padding:14px 0;border-bottom:1px solid var(--line2);}
+  .req:last-child{border-bottom:none;}
+  .req-top{display:flex;align-items:center;gap:10px;}
+  .req-top .info{flex:1;min-width:0;}
+  .req .mot{font-size:13px;color:var(--ink);margin-top:9px;line-height:1.5;background:var(--line2);
+    border-radius:9px;padding:9px 11px;white-space:pre-wrap;overflow-wrap:anywhere;}
+  .req .rep{font-size:12.5px;color:var(--muted);margin-top:8px;}
+  .req .rep b{color:var(--ink);font-weight:600;}
+  .req .btn-row{margin-top:11px;margin-bottom:0;}
+  .swapf{border-top:1px dashed var(--line);margin-top:11px;padding-top:13px;}
+  .swapf label{margin-top:2px;}
+  .badge{display:inline-block;min-width:16px;padding:1px 5px;border-radius:100px;background:var(--warn);
+    color:#fff;font-size:10px;font-weight:700;margin-left:5px;vertical-align:1px;}
+  .tabs.cuatro .stab{font-size:12.5px;padding:9px 2px;}
 
   .alert{background:var(--bad-bg);border:1px solid #FECDD3;border-radius:12px;padding:15px 17px;margin-bottom:14px;}
   .alert h3{font-size:13px;font-weight:600;color:var(--bad);margin-bottom:8px;}
@@ -164,9 +187,10 @@
     <div id="lockMsg"></div>
   </div>
   <div id="panel" class="hide">
-    <div class="tabs">
+    <div class="tabs cuatro">
       <div class="stab on" data-s="hoy">Hoy</div>
       <div class="stab" data-s="horarios">Horarios</div>
+      <div class="stab" data-s="cambios">Cambios<span id="solBadge"></span></div>
       <div class="stab" data-s="ajustes">Ajustes</div>
     </div>
     <div id="sBody"></div>
@@ -220,6 +244,9 @@ function sumaDias(fechaStr,n){const d=parseKey(fechaStr);d.setDate(d.getDate()+n
 function rotuloSemana(lunesStr){
   const d=diasDeSemana(lunesStr),a=parseKey(d[0]),b=parseKey(d[6]);
   return a.getDate()+' '+MESES[a.getMonth()].slice(0,3)+' – '+b.getDate()+' '+MESES[b.getMonth()].slice(0,3);}
+function rotuloFecha(fechaStr){
+  const d=parseKey(fechaStr);
+  return DIAS[(d.getDay()+6)%7]+' '+d.getDate()+' '+MESES[d.getMonth()].slice(0,3);}
 
 /* turnos */
 function minutos(hm){if(!/^\d{1,2}:\d{2}$/.test(hm||''))return null;
@@ -231,8 +258,10 @@ function horasTurno(entrada,salida){
   return Math.round((d/60)*100)/100;}
 function turnoDe(turnos,empId,fecha){
   return turnos.find(t=>t.empleado_id===empId&&t.fecha===fecha)||null;}
+/* un turno cuenta como trabajado si no es libre ni quedó vacante por un cambio aprobado */
+function turnoActivo(t){return !!(t&&!t.libre&&!t.vacante);}
 function horaEsperada(cfg,turno){
-  if(turno&&turno.libre)return null;
+  if(turno&&(turno.libre||turno.vacante))return null;
   if(turno&&turno.entrada)return turno.entrada;
   return cfg.hora_entrada;}
 function calcEstado(cfg,turno,ahora,dist){
@@ -247,6 +276,7 @@ function detectarAnomalias(cfg,turno,ahora,dist,prec){
   if(dist!=null&&dist>cfg.radio)r.push('marcó a '+dist+' m (límite '+cfg.radio+' m)');
   if(prec!=null&&prec>250)r.push('GPS impreciso (±'+prec+' m)');
   if(turno&&turno.libre)r.push('marcó en un día asignado como libre');
+  if(turno&&turno.vacante)r.push('marcó en un turno liberado por un cambio aprobado');
   const esp=horaEsperada(cfg,turno)||cfg.hora_entrada;
   const[hh]=esp.split(':').map(Number), h=ahora.getHours();
   if(h<hh-3||h>hh+9)r.push('marcó en horario fuera de lo normal');
@@ -285,23 +315,45 @@ function validarTurno(t){
   if(horasTurno(t.entrada,t.salida)>14)return{ok:false,error:'Un turno no puede durar más de 14 horas.'};
   return{ok:true};}
 
+/* solicitudes de cambio de turno */
+const MOTIVO_MAX=300;
+function validarSolicitud(i){
+  if(!i.persona)return{ok:false,error:'Selecciona tu nombre.'};
+  if(!i.turno)return{ok:false,error:'Ese turno ya no existe. Actualiza la página.'};
+  if(i.turno.empleado_id!==i.persona.id)return{ok:false,error:'Ese turno no está asignado a ti.'};
+  if(i.turno.fecha<=i.hoy)return{ok:false,error:'Solo puedes pedir cambio de turnos futuros.'};
+  if(!turnoActivo(i.turno))return{ok:false,error:'Ese día no tienes turno que cambiar.'};
+  if(i.pin!==i.persona.pin)return{ok:false,error:'PIN incorrecto.'};
+  if(i.reemplazo_id===i.persona.id)return{ok:false,error:'No puedes proponerte a ti como reemplazo.'};
+  if((i.motivo||'').length>MOTIVO_MAX)return{ok:false,error:'El motivo no puede pasar de '+MOTIVO_MAX+' caracteres.'};
+  if((i.solicitudes||[]).some(s=>s.turno_id===i.turno.id&&s.estado==='pendiente'))
+    return{ok:false,error:'Ya hay una solicitud pendiente para ese turno.'};
+  return{ok:true,body:{turno_id:i.turno.id,empleado_solicitante_id:i.persona.id,
+    empleado_reemplazo_id:i.reemplazo_id||null,motivo:i.motivo||null,estado:'pendiente'}};}
+/* el reemplazo no puede tomar el turno si ese día ya trabaja: lo resuelve el supervisor a mano */
+function conflictoReemplazo(turnos,reemplazoId,turno){
+  if(!reemplazoId||!turno)return null;
+  const t=turnoDe(turnos,reemplazoId,turno.fecha);
+  return t&&t.id!==turno.id&&turnoActivo(t)?t:null;}
+
 function calcKPIs(equipo,marks,turnos,fecha){
-  const esperados=equipo.filter(p=>{const t=turnoDe(turnos,p.id,fecha);return !(t&&t.libre);});
+  const esperados=equipo.filter(p=>{const t=turnoDe(turnos,p.id,fecha);return !(t&&(t.libre||t.vacante));});
   const pres=marks.filter(m=>m.estado==='presente').length;
   const tard=marks.filter(m=>m.estado==='tarde').length;
   const fuera=marks.filter(m=>m.estado==='fuera').length;
   const sinMarcar=esperados.filter(p=>!marks.some(m=>m.empleado_id===p.id));
   const total=esperados.length;
+  const vacantes=equipo.filter(p=>{const t=turnoDe(turnos,p.id,fecha);return !!(t&&t.vacante);}).length;
   return{pres,tard,fuera,sinMarcar,ausentes:fuera+sinMarcar.length,
-    cobertura:total?Math.round(((pres+tard)/total)*100):0,total,
-    libres:equipo.length-total};}
+    cobertura:total?Math.round(((pres+tard)/total)*100):0,total,vacantes,
+    libres:equipo.length-total-vacantes};}
 
 function horasSemana(turnos,empId,lunesStr){
   return diasDeSemana(lunesStr).reduce((s,f)=>{
     const t=turnoDe(turnos,empId,f);
-    return s+(t&&!t.libre?horasTurno(t.entrada,t.salida):0);},0);}
+    return s+(turnoActivo(t)?horasTurno(t.entrada,t.salida):0);},0);}
 function horasMes(turnos,empId,anio,mes){
-  return turnos.filter(t=>t.empleado_id===empId&&!t.libre&&t.fecha.startsWith(
+  return turnos.filter(t=>t.empleado_id===empId&&turnoActivo(t)&&t.fecha.startsWith(
     anio+'-'+String(mes+1).padStart(2,'0')))
     .reduce((s,t)=>s+horasTurno(t.entrada,t.salida),0);}
 function diasLibresMes(turnos,empId,anio,mes){
@@ -316,6 +368,7 @@ function resumenTexto(cfg,equipo,marks,turnos,fecha){
   let t='Asistencia '+fecha+' — '+cfg.nombre+'\n';
   t+='Presentes '+k.pres+'/'+k.total+' · Cobertura '+k.cobertura+'%\n';
   if(k.libres)t+='Con día libre: '+k.libres+'\n';
+  if(k.vacantes)t+='Turnos vacantes por asignar: '+k.vacantes+'\n';
   if(tard.length)t+='Tardanzas: '+tard.map(m=>nombreDe(m.empleado_id)+' ('+hhmm(m.hora)+')').join(', ')+'\n';
   if(fue.length)t+='Fuera de zona: '+fue.map(m=>nombreDe(m.empleado_id)+' ('+m.distancia+' m)').join(', ')+'\n';
   if(k.sinMarcar.length)t+='Sin marcar: '+k.sinMarcar.map(p=>p.nombre).join(', ')+'\n';
@@ -323,8 +376,11 @@ function resumenTexto(cfg,equipo,marks,turnos,fecha){
   return t;}
 
 /* ══════════ ESTADO ══════════ */
-let CFG=null,EQ=[],MARKS=[],TURNOS=[],VIEW='marcar',STAB='hoy',
+let CFG=null,EQ=[],MARKS=[],TURNOS=[],SOL=[],VIEW='marcar',STAB='hoy',
     OPEN=false,FECHA=dateKey(),LUNES=lunesDe(dateKey()),DIA_SEL=dateKey(),PICK=null,LAST_ERR='';
+/* el módulo de cambios necesita la tabla solicitudes_cambio y la columna turnos.vacante
+   (ver sql/solicitudes_cambio.sql). Si faltan, la app sigue funcionando sin el módulo. */
+let SOL_OK=null,HAS_VACANTE=null,SOL_ERR='',EMP_SEL=null;
 
 function setCon(e,t){document.getElementById('cDot').style.background=
   e==='ok'?'var(--ok)':e==='err'?'var(--bad)':'var(--faint)';
@@ -340,10 +396,34 @@ async function cargar(){
       const d=diasDeSemana(LUNES);
       const ini=d[0].slice(0,8)+'01';
       TURNOS=await sb('turnos?tienda_id=eq.'+CFG.id+'&fecha=gte.'+ini+'&select=*');
-    }else{EQ=[];MARKS=[];TURNOS=[];}
+      await cargarSolicitudes();
+    }else{EQ=[];MARKS=[];TURNOS=[];SOL=[];}
     setCon('ok','En línea'); return true;
   }catch(e){setCon('err','Sin conexión');LAST_ERR=String(e.message||e);return false;}
 }
+/* Se aísla del resto: si la tabla o la columna todavía no existen en Supabase,
+   el módulo se apaga solo en vez de tumbar toda la carga. */
+async function cargarSolicitudes(){
+  if(HAS_VACANTE===null){
+    try{await sb('turnos?select=id,vacante&limit=1');HAS_VACANTE=true;}
+    catch(e){HAS_VACANTE=false;}
+  }
+  if(!EQ.length){SOL=[];return;}
+  try{
+    SOL=await sb('solicitudes_cambio?empleado_solicitante_id=in.('+EQ.map(p=>p.id).join(',')+
+      ')&select=*&order=fecha_solicitud.desc');
+    SOL_OK=true;SOL_ERR='';
+  }catch(e){SOL=[];SOL_OK=false;SOL_ERR=String(e.message||e);return;}
+  /* los turnos de solicitudes pendientes pueden caer fuera de la ventana cargada */
+  const faltan=[...new Set(SOL.filter(s=>s.estado==='pendiente').map(s=>s.turno_id))]
+    .filter(id=>id&&!TURNOS.some(t=>t.id===id));
+  if(faltan.length){
+    try{TURNOS=TURNOS.concat(await sb('turnos?id=in.('+faltan.join(',')+')&select=*'));}catch(e){}
+  }
+}
+function solDe(empId){return SOL.filter(s=>s.empleado_solicitante_id===empId);}
+function turnoPorId(id){return TURNOS.find(t=>t.id===id)||null;}
+function solPendienteDe(turnoId){return SOL.find(s=>s.turno_id===turnoId&&s.estado==='pendiente')||null;}
 (async()=>{await cargar();render();})();
 
 document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',async()=>{
@@ -369,26 +449,133 @@ function render(){
 function renderMarcar(){
   const c=document.getElementById('v-marcar');
   if(!CFG||!EQ.length){c.innerHTML='<div class="card"><div class="empty">Sin equipo configurado.<br>Entra a Supervisor para crearlo.</div></div>';return;}
+  if(!EQ.some(p=>p.id===EMP_SEL))EMP_SEL=EQ[0].id;
   c.innerHTML=
   '<div class="card"><div class="card-h">Marcar asistencia<span>Se verifica tu ubicación al registrar</span></div>'+
-  '<label>Nombre</label><select id="mP" onchange="verTurno()">'+
-  EQ.map((p,i)=>'<option value="'+i+'">'+esc(p.nombre)+'</option>').join('')+'</select>'+
+  '<label>Nombre</label><select id="mP" onchange="cambioPersona()">'+
+  EQ.map(p=>'<option value="'+esc(p.id)+'"'+(p.id===EMP_SEL?' selected':'')+'>'+esc(p.nombre)+'</option>').join('')+'</select>'+
   '<div id="turnoHoy"></div>'+
   '<label>PIN</label><input type="tel" id="mPin" class="pin" maxlength="4" placeholder="••••" inputmode="numeric">'+
   '<button class="btn" id="mB" onclick="marcar()">Marcar asistencia</button><div id="mMsg"></div></div>'+
+  '<div id="misTurnos"></div><div id="misSol"></div>'+
   '<div class="card"><div class="card-h">Registros de hoy<span>'+FECHA+'</span></div>'+
   (MARKS.length?MARKS.map(itemHTML).join(''):'<div class="empty">Nadie ha marcado todavía.</div>')+
   '<button class="btn sec" style="margin-top:14px" onclick="refrescar()">Actualizar</button></div>';
-  verTurno();
+  cambioPersona();
 }
+function empSel(){
+  const s=document.getElementById('mP');
+  if(s&&s.value)EMP_SEL=s.value;
+  return EQ.find(p=>p.id===EMP_SEL)||null;
+}
+function cambioPersona(){verTurno();renderMisTurnos();renderMisSolicitudes();}
 function verTurno(){
   const el=document.getElementById('turnoHoy'); if(!el)return;
-  const p=EQ[+document.getElementById('mP').value];
+  const p=empSel(); if(!p)return;
   const t=turnoDe(TURNOS,p.id,FECHA);
   el.innerHTML = t&&t.libre ? '<div class="msg info">Hoy tienes día libre asignado.</div>'
+    : t&&t.vacante ? '<div class="msg warn">Tu turno de hoy quedó liberado por un cambio aprobado.</div>'
     : t&&t.entrada ? '<div class="msg info">Tu turno hoy: '+t.entrada+' – '+(t.salida||'—')+'</div>'
     : '<div class="msg info">Horario general: entrada '+CFG.hora_entrada+'</div>';
 }
+
+/* ══════════ MIS TURNOS · SOLICITAR CAMBIO ══════════ */
+function horarioTurno(t){return t.entrada?t.entrada+' – '+(t.salida||'—'):'Horario por definir';}
+function estadoHTML(e){
+  const l=e==='aprobado'?'Aprobado':e==='rechazado'?'Rechazado':'Pendiente';
+  return '<span class="est '+esc(e)+'"><i></i>'+l+'</span>';
+}
+function renderMisTurnos(){
+  const el=document.getElementById('misTurnos'); if(!el)return;
+  const p=empSel();
+  if(!p){el.innerHTML='';return;}
+  if(SOL_OK===false){
+    el.innerHTML='<div class="card"><div class="card-h">Mis próximos turnos</div>'+avisoSQL()+'</div>';return;}
+  const hoy=dateKey();
+  const futuros=TURNOS.filter(t=>t.empleado_id===p.id&&t.fecha>hoy&&turnoActivo(t))
+    .sort((a,b)=>a.fecha<b.fecha?-1:a.fecha>b.fecha?1:0).slice(0,14);
+  el.innerHTML='<div class="card"><div class="card-h">Mis próximos turnos'+
+    '<span>Puedes pedir cambio de cualquier turno futuro</span></div>'+
+    (futuros.length?futuros.map(t=>turnoSolicitableHTML(p,t)).join('')
+      :'<div class="empty">No tienes turnos futuros cargados.</div>')+'</div>';
+}
+function turnoSolicitableHTML(p,t){
+  const pend=solPendienteDe(t.id);
+  const otros=EQ.filter(x=>x.id!==p.id);
+  return '<div class="req">'+
+    '<div class="req-top"><div class="info">'+
+    '<div class="nm">'+esc(rotuloFecha(t.fecha))+'</div>'+
+    '<div class="mt">'+esc(horarioTurno(t))+'</div></div>'+
+    (pend?estadoHTML('pendiente')
+        :'<button class="btn mini sec" onclick="abrirSwap(\''+esc(t.id)+'\')">Solicitar cambio</button>')+
+    '</div>'+
+    (pend?'':
+    '<div class="swapf hide" id="sw-'+esc(t.id)+'">'+
+      '<label>Motivo (opcional)</label>'+
+      '<textarea id="mot-'+esc(t.id)+'" maxlength="'+MOTIVO_MAX+'" placeholder="Ej: necesito el día libre"></textarea>'+
+      '<label>Reemplazo recomendado (opcional)</label>'+
+      '<select id="rep-'+esc(t.id)+'"><option value="">Sin sugerencia — que decida el supervisor</option>'+
+      otros.map(x=>'<option value="'+esc(x.id)+'">'+esc(x.nombre)+'</option>').join('')+'</select>'+
+      '<label>Tu PIN</label>'+
+      '<input type="tel" class="pin" id="pin-'+esc(t.id)+'" maxlength="4" placeholder="••••" inputmode="numeric">'+
+      '<div id="swm-'+esc(t.id)+'"></div>'+
+      '<div class="btn-row"><button class="btn" onclick="enviarSolicitud(\''+esc(t.id)+'\')">Enviar solicitud</button>'+
+      '<button class="btn sec" onclick="cerrarSwap(\''+esc(t.id)+'\')">Cancelar</button></div>'+
+    '</div>')+
+    '</div>';
+}
+function abrirSwap(id){
+  document.querySelectorAll('.swapf').forEach(f=>f.classList.add('hide'));
+  const f=document.getElementById('sw-'+id); if(f)f.classList.remove('hide');
+}
+function cerrarSwap(id){const f=document.getElementById('sw-'+id); if(f)f.classList.add('hide');}
+
+async function enviarSolicitud(tid){
+  const msg=document.getElementById('swm-'+tid);
+  const rep=document.getElementById('rep-'+tid).value;
+  const v=validarSolicitud({persona:empSel(),turno:turnoPorId(tid),hoy:dateKey(),
+    pin:document.getElementById('pin-'+tid).value.trim(),
+    motivo:document.getElementById('mot-'+tid).value.trim(),
+    reemplazo_id:rep||null,solicitudes:SOL});
+  if(!v.ok){msg.innerHTML='<div class="msg err">'+esc(v.error)+'</div>';return;}
+  msg.innerHTML='<div class="msg info">Enviando…</div>';
+  try{ await sb('solicitudes_cambio',{method:'POST',body:v.body}); }
+  catch(e){msg.innerHTML='<div class="msg err">No se pudo enviar: '+esc(String(e.message).slice(0,160))+'</div>';return;}
+  await cargar();renderMarcar();
+  const el=document.getElementById('misSol');
+  if(el)el.insertAdjacentHTML('afterbegin','<div class="msg ok">Solicitud enviada. Queda pendiente de aprobación del supervisor.</div>');
+}
+
+function renderMisSolicitudes(){
+  const el=document.getElementById('misSol'); if(!el)return;
+  const p=empSel();
+  if(!p||SOL_OK===false){el.innerHTML='';return;}
+  const mias=solDe(p.id);
+  if(!mias.length){el.innerHTML='';return;}
+  el.innerHTML='<div class="card"><div class="card-h">Mis solicitudes de cambio'+
+    '<span>Amarillo en trámite · verde aprobada · rojo rechazada</span></div>'+
+    mias.map(s=>{
+      const t=turnoPorId(s.turno_id);
+      return '<div class="req"><div class="req-top"><div class="info">'+
+        '<div class="nm">'+(t?esc(rotuloFecha(t.fecha)+' · '+horarioTurno(t)):'Turno eliminado')+'</div>'+
+        '<div class="mt">Enviada el '+esc(fechaCorta(s.fecha_solicitud))+
+        (s.fecha_resolucion?' · resuelta el '+esc(fechaCorta(s.fecha_resolucion)):'')+'</div>'+
+        '</div>'+estadoHTML(s.estado)+'</div>'+
+        (s.motivo?'<div class="mot">'+esc(s.motivo)+'</div>':'')+
+        (s.empleado_reemplazo_id?'<div class="rep">Reemplazo propuesto: <b>'+
+          esc(nombreDe(s.empleado_reemplazo_id))+'</b></div>':'')+
+        '</div>';
+    }).join('')+'</div>';
+}
+function fechaCorta(iso){
+  if(!iso)return '—';
+  const d=new Date(iso);
+  return d.getDate()+' '+MESES[d.getMonth()].slice(0,3)+', '+
+    String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+function avisoSQL(){
+  return '<div class="msg warn">El módulo de cambios de turno todavía no está habilitado en la base de datos. '+
+    'Ejecuta <b>sql/solicitudes_cambio.sql</b> en Supabase (SQL Editor) y recarga la página.'+
+    (SOL_ERR?'<br><br>Detalle: '+esc(SOL_ERR.slice(0,160)):'')+'</div>';}
 function itemHTML(m){
   const c=m.estado==='presente'?'ok':m.estado==='tarde'?'warn':'bad';
   const l=m.estado==='presente'?'Presente':m.estado==='tarde'?'Tardanza':'Fuera de zona';
@@ -406,7 +593,7 @@ function pedirUbic(){return new Promise((res,rej)=>{
     {enableHighAccuracy:true,timeout:15000,maximumAge:0});});}
 
 async function marcar(){
-  const p=EQ[+document.getElementById('mP').value];
+  const p=empSel();
   const pin=document.getElementById('mPin').value.trim();
   const msg=document.getElementById('mMsg'),b=document.getElementById('mB');
   const v=validarMarca(MARKS,p,pin);
@@ -442,6 +629,9 @@ function unlock(){
 }
 function marcarSubtab(){
   document.querySelectorAll('.stab').forEach(x=>x.classList.toggle('on',x.dataset.s===STAB));
+  const b=document.getElementById('solBadge');
+  if(b){const n=SOL.filter(s=>s.estado==='pendiente').length;
+    b.className=n?'badge':'';b.textContent=n?String(n):'';}
 }
 function renderPanel(){
   if(!OPEN){document.getElementById('lock').classList.remove('hide');
@@ -457,6 +647,7 @@ function renderPanel(){
   marcarSubtab();
   if(STAB==='hoy')renderHoy();
   else if(STAB==='horarios')renderHorarios();
+  else if(STAB==='cambios')renderSolicitudes();
   else body.innerHTML=setupHTML(true);
 }
 
@@ -477,11 +668,13 @@ function renderHoy(){
   EQ.map(p=>{
     const m=MARKS.find(x=>x.empleado_id===p.id), t=turnoDe(TURNOS,p.id,FECHA);
     if(m)return itemHTML(m);
-    const libre=t&&t.libre;
+    const libre=t&&t.libre, vac=t&&t.vacante;
     return '<div class="item"><div class="av">'+initials(p.nombre)+'</div><div class="info">'+
       '<div class="nm">'+esc(p.nombre)+'</div><div class="mt">'+
-      (libre?'Día libre':(t&&t.entrada?'Turno '+t.entrada+' – '+(t.salida||'—'):esc(p.rol||'Sin turno asignado')))+
-      '</div></div><div class="tag '+(libre?'none':'none')+'">'+(libre?'Libre':'Sin marcar')+'</div></div>';
+      (libre?'Día libre':vac?'Turno liberado '+horarioTurno(t)+' — por asignar'
+        :(t&&t.entrada?'Turno '+t.entrada+' – '+(t.salida||'—'):esc(p.rol||'Sin turno asignado')))+
+      '</div></div><div class="tag '+(vac?'warn':'none')+'">'+
+      (libre?'Libre':vac?'Vacante':'Sin marcar')+'</div></div>';
   }).join('')+
   '<div class="btn-row" style="margin-top:14px">'+
   '<button class="btn sec" onclick="refrescarPanel()">Actualizar</button>'+
@@ -518,9 +711,10 @@ function renderHorarios(){
   EQ.map(p=>{
     const t=turnoDe(TURNOS,p.id,DIA_SEL)||{};
     const h=t.libre?0:horasTurno(t.entrada,t.salida);
-    return '<div class="turno" data-emp="'+p.id+'">'+
+    return '<div class="turno" data-emp="'+p.id+'" data-vac="'+(t.vacante?'1':'')+'">'+
       '<div class="turno-top"><div class="nm">'+esc(p.nombre)+'</div>'+
-      '<span class="hrs">'+(t.libre?'libre':(h?h+' h':''))+'</span>'+
+      '<span class="hrs">'+(t.libre?'libre':t.vacante?'vacante':(h?h+' h':''))+'</span>'+
+      (t.vacante?'<button class="libre-btn on" onclick="liberarVacante(this)">Vacante ✕</button>':'')+
       '<button class="libre-btn'+(t.libre?' on':'')+'" onclick="toggleLibre(this)">Libre</button></div>'+
       '<div class="turno-in"'+(t.libre?' style="opacity:.35;pointer-events:none"':'')+'>'+
       '<input type="time" data-f="entrada" value="'+(t.entrada||'')+'">'+
@@ -536,7 +730,7 @@ function renderHorarios(){
   '<div class="card"><div class="card-h">Horas de la semana<span>'+rotuloSemana(LUNES)+'</span></div>'+
   '<table><thead><tr><th>Persona</th><th>Días</th><th>Horas</th></tr></thead><tbody>'+
   EQ.map(p=>{
-    const dd=diasDeSemana(LUNES).filter(f=>{const t=turnoDe(TURNOS,p.id,f);return t&&!t.libre&&t.entrada;}).length;
+    const dd=diasDeSemana(LUNES).filter(f=>{const t=turnoDe(TURNOS,p.id,f);return turnoActivo(t)&&t.entrada;}).length;
     return '<tr><td>'+esc(p.nombre)+'</td><td>'+dd+'</td><td><b>'+horasSemana(TURNOS,p.id,LUNES).toFixed(1)+' h</b></td></tr>';
   }).join('')+'</tbody></table></div>'+
 
@@ -554,12 +748,19 @@ function toggleLibre(b){
   const on=b.classList.contains('on');
   box.style.opacity=on?'.35':'1';box.style.pointerEvents=on?'none':'auto';
 }
+/* quita la marca de vacante: el turno vuelve a ser de quien lo tenía asignado */
+function liberarVacante(b){
+  const row=b.closest('.turno');
+  row.dataset.vac='';
+  row.querySelector('.hrs').textContent='';
+  b.remove();
+}
 function leerTurnosDia(){
   const out=[];
   document.querySelectorAll('.turno').forEach(r=>{
     const g=f=>r.querySelector('[data-f="'+f+'"]').value;
     out.push({empleado_id:r.dataset.emp,libre:r.querySelector('.libre-btn').classList.contains('on'),
-      entrada:g('entrada')||null,salida:g('salida')||null});});
+      vacante:r.dataset.vac==='1',entrada:g('entrada')||null,salida:g('salida')||null});});
   return out;
 }
 async function grabarDia(fecha,filas,msgEl){
@@ -571,6 +772,7 @@ async function grabarDia(fecha,filas,msgEl){
     const existente=turnoDe(TURNOS,f.empleado_id,fecha);
     const body={tienda_id:CFG.id,empleado_id:f.empleado_id,fecha,
       entrada:f.libre?null:f.entrada,salida:f.libre?null:f.salida,libre:!!f.libre};
+    if(HAS_VACANTE)body.vacante=!f.libre&&!!f.vacante;
     const vacio=!f.libre&&!f.entrada&&!f.salida;
     if(existente){
       if(vacio)await sb('turnos?id=eq.'+existente.id,{method:'DELETE',prefer:'return=minimal'});
@@ -592,7 +794,9 @@ async function guardarTurnos(){
 async function copiarASemana(){
   const msg=document.getElementById('hMsg');
   msg.innerHTML='<div class="msg info">Aplicando a los 7 días…</div>';
-  const filas=leerTurnosDia();
+  /* la vacante es de un día puntual: no se replica al resto de la semana */
+  const filas=leerTurnosDia().map(f=>({empleado_id:f.empleado_id,libre:f.libre,
+    entrada:f.entrada,salida:f.salida}));
   try{
     for(const f of diasDeSemana(LUNES)){ const ok=await grabarDia(f,filas,msg); if(!ok)return; }
     await cargar();renderHorarios();
@@ -617,6 +821,96 @@ async function copiarSemanaAnterior(){
     await cargar();renderHorarios();
     document.getElementById('hMsg').innerHTML='<div class="msg ok">Semana copiada.</div>';
   }catch(e){msg.innerHTML='<div class="msg err">Error: '+esc(String(e.message).slice(0,180))+'</div>';}
+}
+
+/* ══════════ SOLICITUDES DE CAMBIO (SUPERVISOR) ══════════ */
+function renderSolicitudes(){
+  const body=document.getElementById('sBody');
+  if(SOL_OK===false){body.innerHTML='<div class="card"><div class="card-h">Solicitudes de cambio</div>'+
+    avisoSQL()+'</div>';return;}
+  const pend=SOL.filter(s=>s.estado==='pendiente');
+  const resueltas=SOL.filter(s=>s.estado!=='pendiente').slice(0,20);
+  body.innerHTML=
+  '<div class="card"><div class="card-h">Solicitudes de cambio'+
+  '<span>'+(pend.length?pend.length+' pendiente(s) de resolver':'Nada pendiente por ahora')+'</span></div>'+
+  (HAS_VACANTE===false?'<div class="msg warn">Falta la columna <b>vacante</b> en la tabla turnos. '+
+    'Sin ella solo puedes aprobar solicitudes que traen reemplazo propuesto. '+
+    'Ejecuta sql/solicitudes_cambio.sql para habilitarlo.</div>':'')+
+  (pend.length?pend.map(pendienteHTML).join(''):'<div class="empty">No hay solicitudes pendientes.</div>')+
+  '<button class="btn sec" style="margin-top:14px" onclick="refrescarPanel()">Actualizar</button></div>'+
+  (resueltas.length?
+  '<div class="card"><div class="card-h">Resueltas<span>Últimas '+resueltas.length+'</span></div>'+
+  resueltas.map(resueltaHTML).join('')+'</div>':'');
+}
+function pendienteHTML(s){
+  const t=turnoPorId(s.turno_id);
+  const conf=conflictoReemplazo(TURNOS,s.empleado_reemplazo_id,t);
+  const sinCol=!s.empleado_reemplazo_id&&HAS_VACANTE===false;
+  return '<div class="req" id="req-'+esc(s.id)+'">'+
+    '<div class="req-top"><div class="av">'+initials(nombreDe(s.empleado_solicitante_id))+'</div>'+
+    '<div class="info"><div class="nm">'+esc(nombreDe(s.empleado_solicitante_id))+'</div>'+
+    '<div class="mt">'+(t?esc(rotuloFecha(t.fecha)+' · '+horarioTurno(t)):'Turno eliminado')+'</div></div>'+
+    estadoHTML('pendiente')+'</div>'+
+    (s.motivo?'<div class="mot">'+esc(s.motivo)+'</div>':
+      '<div class="rep" style="font-style:italic">Sin motivo indicado.</div>')+
+    '<div class="rep">'+(s.empleado_reemplazo_id
+      ? 'Reemplazo propuesto: <b>'+esc(nombreDe(s.empleado_reemplazo_id))+'</b>'
+      : 'Sin reemplazo propuesto — al aprobar, el turno queda <b>vacante</b> para que lo asignes.')+'</div>'+
+    (conf?'<div class="msg warn" style="margin-top:9px;margin-bottom:0">'+
+      esc(nombreDe(s.empleado_reemplazo_id))+' ya tiene turno ese día ('+esc(horarioTurno(conf))+'). '+
+      'Libera o ajusta ese horario en Horarios antes de aprobar.</div>':'')+
+    (sinCol?'<div class="msg warn" style="margin-top:9px;margin-bottom:0">'+
+      'No se puede dejar el turno vacante hasta ejecutar el SQL.</div>':'')+
+    '<div class="btn-row">'+
+    '<button class="btn" '+(conf||sinCol||!t?'disabled ':'')+'onclick="resolver(\''+esc(s.id)+'\',true)">Aprobar</button>'+
+    '<button class="btn sec" onclick="resolver(\''+esc(s.id)+'\',false)">Rechazar</button></div>'+
+    '<div id="rm-'+esc(s.id)+'"></div></div>';
+}
+function resueltaHTML(s){
+  const t=turnoPorId(s.turno_id);
+  return '<div class="req"><div class="req-top"><div class="info">'+
+    '<div class="nm">'+esc(nombreDe(s.empleado_solicitante_id))+'</div>'+
+    '<div class="mt">'+(t?esc(rotuloFecha(t.fecha)):'Turno eliminado')+
+    ' · resuelta el '+esc(fechaCorta(s.fecha_resolucion))+'</div></div>'+
+    estadoHTML(s.estado)+'</div>'+
+    (s.empleado_reemplazo_id?'<div class="rep">Reemplazo: <b>'+
+      esc(nombreDe(s.empleado_reemplazo_id))+'</b></div>':'')+'</div>';
+}
+
+/* Aprobar reasigna el turno (o lo deja vacante); rechazar no toca la tabla turnos. */
+async function reasignarTurno(s,t){
+  if(!s.empleado_reemplazo_id){
+    await sb('turnos?id=eq.'+t.id,{method:'PATCH',body:{vacante:true}});
+    return;}
+  const ex=turnoDe(TURNOS,s.empleado_reemplazo_id,t.fecha);
+  /* si el reemplazo tenía ese día marcado como libre, ese registro estorba: se elimina */
+  if(ex&&ex.id!==t.id&&ex.libre)
+    await sb('turnos?id=eq.'+ex.id,{method:'DELETE',prefer:'return=minimal'});
+  const body={empleado_id:s.empleado_reemplazo_id};
+  if(HAS_VACANTE)body.vacante=false;
+  await sb('turnos?id=eq.'+t.id,{method:'PATCH',body});
+}
+async function resolver(id,aprobar){
+  const s=SOL.find(x=>x.id===id);
+  const msg=document.getElementById('rm-'+id);
+  if(!s)return;
+  const t=turnoPorId(s.turno_id);
+  if(aprobar){
+    if(!t){msg.innerHTML='<div class="msg err">El turno ya no existe. Rechaza la solicitud.</div>';return;}
+    const conf=conflictoReemplazo(TURNOS,s.empleado_reemplazo_id,t);
+    if(conf){msg.innerHTML='<div class="msg err">'+esc(nombreDe(s.empleado_reemplazo_id))+
+      ' ya tiene turno ese día.</div>';return;}
+    if(!s.empleado_reemplazo_id&&HAS_VACANTE===false){
+      msg.innerHTML='<div class="msg err">Falta la columna vacante en turnos.</div>';return;}
+  }
+  msg.innerHTML='<div class="msg info">Guardando…</div>';
+  try{
+    if(aprobar)await reasignarTurno(s,t);
+    await sb('solicitudes_cambio?id=eq.'+id,{method:'PATCH',
+      body:{estado:aprobar?'aprobado':'rechazado',fecha_resolucion:new Date().toISOString()}});
+  }catch(e){msg.innerHTML='<div class="msg err">No se pudo guardar: '+
+    esc(String(e.message).slice(0,180))+'</div>';return;}
+  await cargar();renderPanel();
 }
 
 /* ══════════ MAPA DE COBERTURA ══════════ */
@@ -815,9 +1109,26 @@ async function diagnostico(){
       (r.ok?'<div class="msg ok">Conexión correcta. Recarga la página.</div>':
        r.status===401||r.status===403?'<div class="msg warn">Faltan los permisos (las políticas del SQL).</div>':
        r.status===404?'<div class="msg warn">No encuentra la tabla: revisa que el SQL se haya ejecutado.</div>':'');
+    if(r.ok)o.innerHTML+=await diagCambios();
+    return;
   }catch(e){
     o.innerHTML='<div class="msg err">No se pudo contactar al servidor: '+esc(String(e.message||e))+
     '<br><br>El navegador está bloqueando conexiones externas desde aquí. La app necesita estar publicada en tu propio hosting.</div>';}
+}
+/* revisa lo que necesita el módulo de cambio de turno */
+async function diagCambios(){
+  const partes=[];
+  let tabla=true,col=true;
+  try{await sb('solicitudes_cambio?select=id&limit=1');}catch(e){tabla=false;}
+  try{await sb('turnos?select=id,vacante&limit=1');}catch(e){col=false;}
+  HAS_VACANTE=col;
+  partes.push('<div class="msg '+(tabla?'ok':'warn')+'">Tabla solicitudes_cambio: '+
+    (tabla?'lista.':'no encontrada.')+'</div>');
+  partes.push('<div class="msg '+(col?'ok':'warn')+'">Columna turnos.vacante: '+
+    (col?'lista.':'no encontrada.')+'</div>');
+  if(!tabla||!col)partes.push('<div class="msg info">Ejecuta <b>sql/solicitudes_cambio.sql</b> '+
+    'en el SQL Editor de Supabase para habilitar los cambios de turno.</div>');
+  return partes.join('');
 }
 </script>
 </body>
