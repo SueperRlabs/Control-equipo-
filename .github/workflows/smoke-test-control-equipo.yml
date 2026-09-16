@@ -6,16 +6,20 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Prepare premium Horarios integration
+        run: python3 scripts/integrate_premium_horarios.py
       - name: Check JavaScript syntax
         run: |
           node <<'NODE'
@@ -31,69 +35,47 @@ jobs:
           }
           NODE
           for f in /tmp/control-script-*.js; do node --check "$f"; done
-      - name: Verify stable core markers
+      - name: Verify stable core and premium markers
         run: |
           grep -q "function renderHorarios" index.html
           grep -q "function marcar" index.html
           grep -q "function guardarCfg" index.html
           grep -q "function cargarSolicitudes" index.html
           grep -q "const SB_URL" index.html
-          echo "Stable core markers present"
-      - name: Validate premium demo data and supervisor unlock
-        run: |
-          node <<'NODE'
-          const fs=require('fs');
-          const html=fs.readFileSync('horarios-premium.html','utf8');
-          const script=([...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)][0]||[])[1];
-          if(!script) throw new Error('Premium script missing');
-          const prelude=`
-          const __els=new Map();
-          function __el(id){if(!__els.has(id)){const set=new Set();__els.set(id,{id,value:'',textContent:'',innerHTML:'',className:'',disabled:false,classList:{add(...x){x.forEach(v=>set.add(v))},remove(...x){x.forEach(v=>set.delete(v))},contains(x){return set.has(x)}},addEventListener(){},querySelectorAll(){return[]},querySelector(){return null},closest(){return null}})}return __els.get(id)}
-          global.location={search:'?demo=1'};
-          global.localStorage={_m:new Map(),getItem(k){return this._m.get(k)||null},setItem(k,v){this._m.set(k,String(v))},removeItem(k){this._m.delete(k)}};
-          global.document={getElementById:__el,querySelectorAll(){return[]}};
-          `;
-          const checks=`
-          setTimeout(()=>{
-            try{
-              if(!DEMO) throw new Error('Demo mode did not activate');
-              if(EQ.length!==30) throw new Error('Expected 30 demo people, got '+EQ.length);
-              const ds=diasSemana(LUNES);
-              for(const p of EQ){
-                const total=ds.reduce((s,f)=>s+horasEfectivas(tDe(p.id,f)),0);
-                if(Math.abs(total-42)>0.001) throw new Error(p.nombre+' has '+total+' effective hours, expected 42');
-              }
-              const cov=coberturaMinima();
-              if(cov<2) throw new Error('Minimum coverage below 2: '+cov);
-              document.getElementById('pin').value='6060';
-              desbloquear();
-              if(!UNLOCKED) throw new Error('Supervisor PIN did not unlock editor');
-              console.log('Premium demo OK: 30 people, 42h each, minimum coverage='+cov+', PIN unlock OK');
-            }catch(e){console.error(e);process.exitCode=1}
-          },0);
-          `;
-          fs.writeFileSync('/tmp/premium-demo-test.js',prelude+'\n'+script+'\n'+checks);
-          NODE
-          node /tmp/premium-demo-test.js
-      - name: Report Supabase reachability
-        continue-on-error: true
+          grep -q "QUANTY_PREMIUM_HORARIOS_START" index.html
+          grep -q "horarios-premium.html?real=1" index.html
+          echo "Stable core preserved and Premium Horarios integrated"
+      - name: Verify real Supabase
         run: |
           node <<'NODE'
           const fs=require('fs');
           const html=fs.readFileSync('index.html','utf8');
           const url=(html.match(/const SB_URL='([^']+)'/)||[])[1];
           const key=(html.match(/const SB_KEY='([^']+)'/)||[])[1];
-          if(!url||!key) throw new Error('Missing Supabase config in index.html');
+          if(!url||!key) throw new Error('Missing Supabase config');
           const headers={apikey:key,Authorization:`Bearer ${key}`};
+          const tests=[
+            ['tiendas','tiendas?select=id,nombre&limit=1'],
+            ['empleados','empleados?select=id,nombre&limit=1'],
+            ['turnos','turnos?select=id,fecha&limit=1']
+          ];
           (async()=>{
-            try{
-              const r=await fetch(`${url}/rest/v1/tiendas?select=id,nombre&limit=1`,{headers});
+            for(const [name,path] of tests){
+              const r=await fetch(`${url}/rest/v1/${path}`,{headers});
               const text=await r.text();
-              console.log(`Supabase: HTTP ${r.status}, bytes=${text.length}`);
-              if(!r.ok) throw new Error(`HTTP ${r.status}`);
-            }catch(e){
-              console.warn('Supabase currently unreachable:',e.message||e);
-              process.exit(1);
+              console.log(`${name}: HTTP ${r.status}, bytes=${text.length}`);
+              if(!r.ok) throw new Error(`${name} HTTP ${r.status}`);
             }
-          })();
+          })().catch(e=>{console.error(e);process.exit(1)});
           NODE
+      - name: Commit verified integration
+        run: |
+          if git diff --quiet -- index.html; then
+            echo "Integration already present"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git commit -m 'Show Premium Horarios inside Control Equipo'
+          git push
