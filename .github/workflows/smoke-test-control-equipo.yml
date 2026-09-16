@@ -1,0 +1,52 @@
+name: Smoke test Control Equipo
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check JavaScript syntax
+        run: |
+          node <<'NODE'
+          const fs=require('fs');
+          const html=fs.readFileSync('index.html','utf8');
+          const matches=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)];
+          if(!matches.length) throw new Error('No script block found');
+          matches.forEach((m,i)=>fs.writeFileSync(`/tmp/control-script-${i}.js`,m[1]));
+          console.log(`Found ${matches.length} script block(s)`);
+          NODE
+          for f in /tmp/control-script-*.js; do node --check "$f"; done
+      - name: Test Supabase read access
+        run: |
+          node <<'NODE'
+          const fs=require('fs');
+          const html=fs.readFileSync('index.html','utf8');
+          const url=(html.match(/const SB_URL='([^']+)'/)||[])[1];
+          const key=(html.match(/const SB_KEY='([^']+)'/)||[])[1];
+          if(!url||!key) throw new Error('Missing Supabase config in index.html');
+          const headers={apikey:key,Authorization:`Bearer ${key}`};
+          const tests=[
+            ['tiendas','tiendas?select=id,nombre&limit=1'],
+            ['empleados','empleados?select=id,nombre&limit=1'],
+            ['turnos','turnos?select=id,fecha&limit=1']
+          ];
+          (async()=>{
+            for(const [name,path] of tests){
+              const r=await fetch(`${url}/rest/v1/${path}`,{headers});
+              const text=await r.text();
+              console.log(`${name}: HTTP ${r.status}, bytes=${text.length}`);
+              if(!r.ok) throw new Error(`${name} failed: HTTP ${r.status} ${text.slice(0,180)}`);
+            }
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
