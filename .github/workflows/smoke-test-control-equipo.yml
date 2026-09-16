@@ -39,6 +39,42 @@ jobs:
           grep -q "function cargarSolicitudes" index.html
           grep -q "const SB_URL" index.html
           echo "Stable core markers present"
+      - name: Validate premium demo data and supervisor unlock
+        run: |
+          node <<'NODE'
+          const fs=require('fs');
+          const html=fs.readFileSync('horarios-premium.html','utf8');
+          const script=([...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)][0]||[])[1];
+          if(!script) throw new Error('Premium script missing');
+          const prelude=`
+          const __els=new Map();
+          function __el(id){if(!__els.has(id)){const set=new Set();__els.set(id,{id,value:'',textContent:'',innerHTML:'',className:'',disabled:false,classList:{add(...x){x.forEach(v=>set.add(v))},remove(...x){x.forEach(v=>set.delete(v))},contains(x){return set.has(x)}},addEventListener(){},querySelectorAll(){return[]},querySelector(){return null},closest(){return null}})}return __els.get(id)}
+          global.location={search:'?demo=1'};
+          global.localStorage={_m:new Map(),getItem(k){return this._m.get(k)||null},setItem(k,v){this._m.set(k,String(v))},removeItem(k){this._m.delete(k)}};
+          global.document={getElementById:__el,querySelectorAll(){return[]}};
+          `;
+          const checks=`
+          setTimeout(()=>{
+            try{
+              if(!DEMO) throw new Error('Demo mode did not activate');
+              if(EQ.length!==30) throw new Error('Expected 30 demo people, got '+EQ.length);
+              const ds=diasSemana(LUNES);
+              for(const p of EQ){
+                const total=ds.reduce((s,f)=>s+horasEfectivas(tDe(p.id,f)),0);
+                if(Math.abs(total-42)>0.001) throw new Error(p.nombre+' has '+total+' effective hours, expected 42');
+              }
+              const cov=coberturaMinima();
+              if(cov<2) throw new Error('Minimum coverage below 2: '+cov);
+              document.getElementById('pin').value='6060';
+              desbloquear();
+              if(!UNLOCKED) throw new Error('Supervisor PIN did not unlock editor');
+              console.log('Premium demo OK: 30 people, 42h each, minimum coverage='+cov+', PIN unlock OK');
+            }catch(e){console.error(e);process.exitCode=1}
+          },0);
+          `;
+          fs.writeFileSync('/tmp/premium-demo-test.js',prelude+'\n'+script+'\n'+checks);
+          NODE
+          node /tmp/premium-demo-test.js
       - name: Report Supabase reachability
         continue-on-error: true
         run: |
