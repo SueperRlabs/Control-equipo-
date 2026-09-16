@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# 1) Keep the Control Equipo core intact and only append the Horarios visual shell.
 p = Path('index.html')
 s = p.read_text(encoding='utf-8')
 start = '<!-- QUANTY_PREMIUM_HORARIOS_START -->'
@@ -57,4 +58,35 @@ if '</body>' not in s:
 
 s = s.replace('</body>', patch + '\n</body>', 1)
 p.write_text(s, encoding='utf-8')
-print('Premium Horarios patch prepared.')
+
+# 2) Embedded Horarios must be REAL ONLY. The standalone ?demo=1 remains available
+# for development, but Control Equipo loads ?real=1 and must never silently show fake data.
+h = Path('horarios-premium.html')
+hs = h.read_text(encoding='utf-8')
+force_line = "const FORCE_DEMO=new URLSearchParams(location.search).get('demo')==='1';"
+real_line = "const REAL_ONLY=new URLSearchParams(location.search).get('real')==='1';"
+if real_line not in hs:
+    if force_line not in hs:
+        raise SystemExit('FORCE_DEMO marker missing; refusing to patch premium view')
+    hs = hs.replace(force_line, force_line + '\n' + real_line, 1)
+
+old_catch = "}catch(e){activarDemo('Backend no disponible; se activó automáticamente la demo.')}"
+new_catch = """}catch(e){
+    if(REAL_ONLY){
+      DEMO=false;
+      const st=document.getElementById('status');st.textContent='SIN CONEXIÓN';st.classList.remove('demo');
+      document.getElementById('sub').textContent='No fue posible leer los datos reales';
+      document.getElementById('notice').innerHTML='<div class=\"notice\"><b>Sin conexión a datos reales.</b> No se muestran datos demo. Pulsa Actualizar cuando vuelva Supabase.</div>';
+      document.getElementById('table').innerHTML='<tbody><tr><td style=\"padding:28px;text-align:center;color:#8fb6d8\">Esperando conexión con Supabase…</td></tr></tbody>';
+      document.getElementById('editor').classList.add('hide');
+    }else activarDemo('Backend no disponible; se activó automáticamente la demo.')
+  }"""
+if 'No se muestran datos demo' not in hs:
+    if old_catch not in hs:
+        raise SystemExit('Premium fallback catch marker missing; refusing to patch')
+    hs = hs.replace(old_catch, new_catch, 1)
+
+hs = hs.replace('En modo demo los cambios quedan guardados solo en este navegador. En modo real se usan los mismos turnos de Control Equipo.',
+                'Los cambios de esta vista integrada se guardan en los mismos turnos reales de Control Equipo.')
+h.write_text(hs, encoding='utf-8')
+print('Premium Horarios integration prepared in real-only mode.')
